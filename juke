@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# juke — start the jukebox as one unit.
+#   • launches the conductor engine in the background (serial + MQTT + MIDI)
+#   • runs the listview TUI in the foreground
+#   • quitting the TUI gracefully stops the engine (mutes synth, closes serial)
+set -u
+cd "$(dirname "$0")"
+
+LOG="conductor.log"
+
+# start the engine; its stdout must go to a log, not the terminal the TUI owns
+python3 conductor/conductor.py > "$LOG" 2>&1 &
+COND=$!
+
+cleanup() {
+    # SIGINT (not TERM) so conductor's KeyboardInterrupt/finally runs:
+    # it sends volume 0 to all channels and closes the serial port.
+    kill -INT "$COND" 2>/dev/null
+    wait "$COND" 2>/dev/null
+}
+trap cleanup EXIT INT TERM
+
+# give the engine a moment to open serial + connect to MQTT
+sleep 1
+
+# if the engine died on startup (bad serial port, broker down…), show why and bail
+if ! kill -0 "$COND" 2>/dev/null; then
+    echo "conductor failed to start — last lines of $LOG:"
+    tail -n 20 "$LOG"
+    exit 1
+fi
+
+# foreground: the remote-control UI. Closing it returns here → EXIT trap → cleanup.
+python3 listview.py

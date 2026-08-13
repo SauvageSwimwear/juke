@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m py_compile conductor.py config.py packet.py playlist.py)",
+      "Bash(stty -F /dev/ttyUSB0 115200 -echo -icanon)",
+      "Read(//dev/**)",
+      "Bash(dmesg)"
+    ]
+  }
+}

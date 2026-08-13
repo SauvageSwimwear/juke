@@ -1,0 +1,42 @@
+JUKEBOX CHEATSHEET
+==================
+
+START
+  ./juke                                        (engine + TUI together; quit TUI = stop all)
+
+START (engine only, for dev)
+  python3 /home/pibb/juke/conductor/conductor.py
+
+MQTT BROKER
+  host : 10.0.1.110
+  port : 1884
+  user : mqttuser
+  pass : pibb
+
+CONTROL TOPIC:  jukebox/control
+STATUS TOPIC:   jukebox/status
+
+COMMANDS
+  pause
+  resume
+  skip
+  shuffle
+  volume/0          (silent)
+  volume/64         (half)
+  volume/127        (full)
+  play/<filename>   (jump to specific track)
+
+EXAMPLES (mosquitto_pub)
+  mosquitto_pub -h 10.0.1.110 -p 1884 -u mqttuser -P pibb -t jukebox/control -m skip
+  mosquitto_pub -h 10.0.1.110 -p 1884 -u mqttuser -P pibb -t jukebox/control -m shuffle
+  mosquitto_pub -h 10.0.1.110 -p 1884 -u mqttuser -P pibb -t jukebox/control -m volume/80
+  mosquitto_pub -h 10.0.1.110 -p 1884 -u mqttuser -P pibb -t jukebox/control -m "play/Concerto.n100.mid"
+
+PLAYLIST
+  107 Vivaldi MIDI files
+  location : /home/pibb/juke/data/
+  plays alphabetically, loops — use shuffle to randomize
+
+NODES
+  elfer  : bridge  — GPIO serial /dev/ttyAMA0 → ESP-NOW broadcaster
+  coffee : GM node — wireless, power only, MIDI out on GPIO17
