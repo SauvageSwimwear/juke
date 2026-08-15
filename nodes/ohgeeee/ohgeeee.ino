@@ -1,7 +1,7 @@
  // ohgeeee.ino — passive buzzer triad node for the jukebox ESP-NOW mesh
 //
 // Spiritual successor to Crick (ESP32-C3, CircuitPython, UART tap on Coffee).
-// Same job, better architecture: ESP-NOW broadcast instead of physical UART tap,
+//xyxyuixyuiuyxiuxyiuxyxiuyxiuxyiuxyxiuyxiuyxxasd
 // so ohgeeee is untethered from Coffee and lives anywhere in the mesh.
 //
 // Hardware: ESP32 DevKit (WROOM-32)
