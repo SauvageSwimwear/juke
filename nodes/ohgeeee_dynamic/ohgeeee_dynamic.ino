@@ -1,8 +1,12 @@
-// ohgeeee.ino — passive buzzer + indicator LED node for the jukebox ESP-NOW mesh
+// ohgeeee_dynamic.ino — DYNAMIC-BUZZER variant of ohgeeee
 //
-// Spiritual successor to Crick (ESP32-C3, CircuitPython, UART tap on Coffee).
-// Same job, better architecture: ESP-NOW broadcast instead of physical UART tap,
-// so ohgeeee is untethered from Coffee and lives anywhere in the mesh.
+// Identical to ohgeeee.ino (same pins, same MIDI channels, same LED behavior)
+// EXCEPT the buzzers respond to MIDI velocity: soft notes play quieter, loud
+// notes louder, via duty-cycle scaling. The stock ohgeeee.ino plays a flat
+// "straight buzz" (Crick-style) at full 50% duty on every note.
+//
+// Flash this to A/B against the straight-buzz build. The only difference is the
+// BUZ_DUTY_MIN define below (45 here vs 128 in ohgeeee.ino).
 //
 // Hardware: ESP32 DevKit (WROOM-32)
 //   GPIO 25 → passive piezo buzzer 0
@@ -14,45 +18,32 @@
 //
 // Avoided: 6–11 (flash), 34/35/36/39 (input-only), 0/2/12/15 (boot-strapping), 1/3 (USB serial)
 //
-// Audio and LED slots are INDEPENDENT — each listens to its own set of MIDI
-// channels. Three channels drive buzzers; three (different) channels drive LEDs.
-// A single channel can appear in both lists if you want audio+visual together.
-//
 // Ethos: listens only. Conductor untouched. Behavior derives entirely from ESP-NOW packets.
 //
-// Requires: arduino-esp32 3.x (pin-based LEDC API: ledcAttach / ledcWriteTone)
+// Requires: arduino-esp32 3.x (pin-based LEDC API: ledcAttach / ledcChangeFrequency)
 
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <math.h>
 
-// ── audio slots (buzzer only) — edit these ───────────────────────────────────
-// Each slot listens to one MIDI channel (0-indexed: 0 = ch 1 in DAWs).
-// Ch 0 is the safe anchor — present in virtually every file.
-// Use Matrixman or the mido one-liner on Pi to find active channels in your files.
-
+// ── audio slots (buzzer only) — same channels/pins as ohgeeee.ino ─────────────
 #define NUM_AUDIO 3
 const uint8_t AUDIO_CH[NUM_AUDIO] = {  0,  5, 10 };   // MIDI channels
 const uint8_t BUZ_PIN[NUM_AUDIO]  = { 25, 26, 27 };   // passive piezo GPIO
 
 // ── buzzer tuning ─────────────────────────────────────────────────────────────
-// DEFAULT = "straight buzz" like Crick: every note plays at the flat 50%-duty
-// loudness ceiling (BUZ_DUTY_MIN == BUZ_DUTY_MAX), true pitch, no dynamics.
-// The velocity/octave machinery below is kept as knobs — to re-enable it:
-//   • Dynamics: lower BUZ_DUTY_MIN (e.g. 45) so velocity scales duty toward 50%.
-//   • Louder-than-Crick: raise BUZ_OCTAVE_UP (1–2) to shift notes toward the
-//     piezo's mechanical resonance (~2–4 kHz), where it's much louder.
+// DYNAMIC build: BUZ_DUTY_MIN < BUZ_DUTY_MAX, so velocity scales duty between the
+// two (soft/loud contrast). Tuning:
+//   • Soft notes vanishing? Raise BUZ_DUTY_MIN toward 128.
+//   • Want more contrast? Lower BUZ_DUTY_MIN toward ~20.
+//   • Overall too quiet? Raise BUZ_OCTAVE_UP (1–2) toward piezo resonance (~2–4 kHz).
 #define BUZ_RES_BITS   8       // LEDC resolution (0–255 duty)
-#define BUZ_DUTY_MAX 128       // 50% of 256 — loudest a piezo gets
-#define BUZ_DUTY_MIN 128       // == MAX → flat straight buzz (Crick). Lower to add dynamics.
-#define BUZ_OCTAVE_UP  0       // 0 = true pitch (Crick). Raise for loudness via resonance.
+#define BUZ_DUTY_MAX 128       // 50% of 256 — loudest a piezo gets (velocity 127)
+#define BUZ_DUTY_MIN  45       // duty at lowest velocity — the dynamics floor
+#define BUZ_OCTAVE_UP  0       // 0 = true pitch. Raise for loudness via resonance.
 
-// ── LED slots (visual only) — edit these ─────────────────────────────────────
-// Completely independent from audio. Pick channels with interesting activity.
-// Good candidates: melody channels, percussion (ch 9), bass line.
-// If you pick a channel also in AUDIO_CH you get audio+visual on that channel.
-
+// ── LED slots (visual only) — same as ohgeeee.ino ─────────────────────────────
 #define NUM_LEDS_SLOT 3
 const uint8_t LED_CH[NUM_LEDS_SLOT]  = {  1,  2,  3 };   // MIDI channels
 const uint8_t LED_PIN[NUM_LEDS_SLOT] = { 32, 33, 13 };   // indicator LED GPIO
@@ -95,7 +86,7 @@ void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
 
   if (msgType != MSG_NOTE_ON && msgType != MSG_NOTE_OFF) return;
 
-  // ── audio: buzzers ─────────────────────────────────────────────────────────
+  // ── audio: buzzers (velocity-scaled duty) ──────────────────────────────────
   for (int i = 0; i < NUM_AUDIO; i++) {
     if (ch != AUDIO_CH[i]) continue;
     bool isOn  = (msgType == MSG_NOTE_ON  && vel > 0);
@@ -164,8 +155,8 @@ void setup() {
   lastLedUpdate = millis();
 
   Serial.printf(
-    "ohgeeee ready\n"
-    "  audio  ch=[%d,%d,%d]  buz=[%d,%d,%d]\n"
+    "ohgeeee-dynamic ready\n"
+    "  audio  ch=[%d,%d,%d]  buz=[%d,%d,%d]  (velocity-scaled)\n"
     "  leds   ch=[%d,%d,%d]  led=[%d,%d,%d]\n",
     AUDIO_CH[0],   AUDIO_CH[1],   AUDIO_CH[2],
     BUZ_PIN[0],    BUZ_PIN[1],    BUZ_PIN[2],
