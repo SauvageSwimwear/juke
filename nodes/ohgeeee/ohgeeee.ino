@@ -28,7 +28,17 @@
 // Channels 0, 5, 10 match the Crick V1 config; change freely.
 // "Channel present in every file" rule: ch 0 is the safe anchor.
 
-#define NUM_SLOTS 3
+
+#define NUM_AUDIO 3
+const uint8_t AUDIO_CH[NUM_AUDIO] = {  0,  5, 10 };
+const uint8_t BUZ_PIN[NUM_AUDIO]  = { 25, 26, 27 };
+static int16_t activeNote[NUM_AUDIO];   // -1 = silent
+
+// ── LED slots (visual only) ───────────────────────────────────────────────────
+#define NUM_LEDS 3
+const uint8_t LED_CH[NUM_LEDS]  = {  1,  4,  7 };   // pick channels with activity you like
+const uint8_t LED_PIN[NUM_LEDS] = { 32, 33, 13 };
+static float ledBright[NUM_LEDS] = {};
 
 const uint8_t LISTEN_CH[NUM_SLOTS] = {  0,  5, 10 };  // MIDI channels (0-indexed)
 const uint8_t BUZ_PIN[NUM_SLOTS]   = { 25, 26, 27 };  // passive piezo GPIO
@@ -57,10 +67,41 @@ static uint32_t midiToHz(uint8_t note) {
   return (uint32_t)(440.0f * powf(2.0f, (note - 69) / 12.0f));
 }
 
-// ── ESP-NOW receive callback ──────────────────────────────────────────────────
 void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   if (len != 6) return;
+  uint8_t chk = data[0]^data[1]^data[2]^data[3]^data[4];
+  if (chk != data[5]) return;
 
+  uint8_t msgType = data[0];
+  uint8_t ch      = data[1] & 0x0F;
+  uint8_t note    = data[2];
+  uint8_t vel     = data[3];
+
+  if (msgType != MSG_NOTE_ON && msgType != MSG_NOTE_OFF) return;
+
+  // ── audio ──────────────────────────────────────────────────────────────────
+  for (int i = 0; i < NUM_AUDIO; i++) {
+    if (ch != AUDIO_CH[i]) continue;
+    bool isOn  = (msgType == MSG_NOTE_ON  && vel > 0);
+    bool isOff = (msgType == MSG_NOTE_OFF) || (msgType == MSG_NOTE_ON && vel == 0);
+    if (isOn) {
+      ledcWriteTone(BUZ_PIN[i], midiToHz(note));
+      activeNote[i] = note;
+    } else if (isOff && activeNote[i] == (int16_t)note) {
+      ledcWriteTone(BUZ_PIN[i], 0);
+      activeNote[i] = -1;
+    }
+    break;
+  }
+
+  // ── LEDs ───────────────────────────────────────────────────────────────────
+  for (int i = 0; i < NUM_LEDS; i++) {
+    if (ch != LED_CH[i]) continue;
+    if (msgType == MSG_NOTE_ON && vel > 0)
+      ledBright[i] = 60.0f + (vel / 127.0f) * 160.0f;   // velocity-scaled brightness
+    break;
+  }
+}
   // Verify XOR checksum (bytes 0–4 XOR'd must equal byte 5)
   uint8_t chk = data[0] ^ data[1] ^ data[2] ^ data[3] ^ data[4];
   if (chk != data[5]) return;
