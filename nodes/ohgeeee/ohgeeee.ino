@@ -1,4 +1,4 @@
-// ohgeeee.ino — passive buzzer triad node for the jukebox ESP-NOW mesh
+ // ohgeeee.ino — passive buzzer triad node for the jukebox ESP-NOW mesh
 //
 // Spiritual successor to Crick (ESP32-C3, CircuitPython, UART tap on Coffee).
 // Same job, better architecture: ESP-NOW broadcast instead of physical UART tap,
@@ -188,3 +188,4 @@ void loop() {
     digitalWrite(LED_PIN[i], ledBright[i] > 0.0f ? HIGH : LOW);
   }
 }
+                             Y                          
