@@ -1,27 +1,25 @@
 // gm_node.ino — Coffee: GM synthesizer performer node
 // Receives 6-byte XOR-checksummed ESP-NOW packets from Elfer.
-// Forwards to GM chip via MIDI UART (TX only, 31250 baud).
+// Forwards to GM chip via MidiOut (UART1, pin 17, 31250 baud).
 //
 // WATCHDOG: if no packet arrives for WATCHDOG_MS, fires all-notes-off.
 // Prevents hanging notes on Pi pause / shutdown / crash.
 //
-// STATUS: serial heartbeat every HEARTBEAT_MS.
+// Requires MidiOut.h in the same sketch folder.
 
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include "MidiOut.h"
 
 // ── config ────────────────────────────────────────────────────────────────────
-#define ESPNOW_CHANNEL   1
-#define MIDI_TX_PIN      17       // → GM chip MIDI RX. Verify vs your wiring.
-#define MIDI_BAUD        31250
-#define WATCHDOG_MS      1500     // silence threshold → all-notes-off.
-                                  // Harmless during a musical rest (no notes
-                                  // are playing), but will clip a sustained
-                                  // chord held longer than this. Tune upward
-                                  // if you have pieces with very long holds.
-#define HEARTBEAT_MS     30000
-#define VERBOSE_PACKETS  0        // 1 = log every packet. Noisy during playback.
+#define ESPNOW_CHANNEL  1
+#define MIDI_TX_PIN     17        // → GM chip MIDI RX. Verify vs your wiring.
+#define WATCHDOG_MS     1500      // silence threshold → all-notes-off.
+                                  // Harmless during a musical rest. Increase if
+                                  // your pieces have held notes longer than this.
+#define HEARTBEAT_MS    30000
+#define VERBOSE_PACKETS 0         // 1 = log every packet. Noisy during playback.
 
 // ── packet types (must match conductor/packet.py) ─────────────────────────────
 #define MSG_NOTE_ON   0x01
@@ -38,31 +36,12 @@ static volatile uint8_t evHead = 0, evTail = 0;
 static portMUX_TYPE     evMux  = portMUX_INITIALIZER_UNLOCKED;
 
 // ── state ─────────────────────────────────────────────────────────────────────
+static MidiOut                _midi;
 static volatile unsigned long lastPacketTime = 0;
-static volatile bool          watchdogArmed  = false;  // true after first packet received
+static volatile bool          watchdogArmed  = false;
 static uint32_t               packetCount    = 0;
 static uint32_t               dropCount      = 0;
 static uint32_t               watchdogFires  = 0;
-
-// ── MIDI helpers ──────────────────────────────────────────────────────────────
-static void midi3(uint8_t a, uint8_t b, uint8_t c) {
-    uint8_t m[3] = {a, b, c};
-    Serial1.write(m, 3);
-}
-static void midi2(uint8_t a, uint8_t b) {
-    uint8_t m[2] = {a, b};
-    Serial1.write(m, 2);
-}
-
-// Sends CC 123 (all notes off) + CC 121 (reset controllers) on all 16 channels.
-// If your GM chip ignores CC 123 and notes still hang, escalate to a GM SysEx
-// reset: F0 7E 7F 09 01 F7 (General MIDI mode on — resets chip state entirely).
-static void allNotesOff() {
-    for (uint8_t ch = 0; ch < 16; ch++) {
-        midi3(0xB0 | ch, 123, 0);   // CC 123: all notes off
-        midi3(0xB0 | ch, 121, 0);   // CC 121: reset all controllers
-    }
-}
 
 // ── ESP-NOW receive callback ───────────────────────────────────────────────────
 void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
@@ -78,7 +57,7 @@ void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
     taskENTER_CRITICAL(&evMux);
     uint8_t next = (evHead + 1) % EVENT_BUF;
     if (next != evTail) { eventBuf[evHead] = e; evHead = next; }
-    else dropCount++;   // queue full; shouldn't happen at normal MIDI rates
+    else dropCount++;
     taskEXIT_CRITICAL(&evMux);
 }
 
@@ -89,11 +68,9 @@ void setup() {
     Serial.printf("[coffee] booting  midi_tx=%d  channel=%d  watchdog=%dms\n",
                   MIDI_TX_PIN, ESPNOW_CHANNEL, WATCHDOG_MS);
 
-    // Start MIDI UART and immediately silence the GM chip.
-    // This clears any hanging notes from the previous session.
-    Serial1.begin(MIDI_BAUD, SERIAL_8N1, -1, MIDI_TX_PIN);
-    delay(150);   // give GM chip a moment after power-on
-    allNotesOff();
+    _midi.begin(MIDI_TX_PIN);
+    delay(150);             // give GM chip a moment after power-on
+    _midi.allNotesOff();    // clear any hanging notes from previous session
     Serial.println("[coffee] boot all-notes-off sent");
 
     WiFi.mode(WIFI_STA);
@@ -129,31 +106,28 @@ void loop() {
 #endif
         switch (e.type) {
             case MSG_NOTE_ON:
-                // vel=0 is a running-status note-off (MIDI spec)
-                if (e.d2 == 0) midi3(0x80 | e.ch, e.d1, 0);
-                else           midi3(0x90 | e.ch, e.d1, e.d2);
+                if (e.d2 == 0) _midi.noteOff(e.d1, e.ch);          // vel=0 = note off
+                else           _midi.noteOn(e.d1, e.d2, e.ch);
                 break;
-            case MSG_NOTE_OFF: midi3(0x80 | e.ch, e.d1, e.d2); break;
-            case MSG_PROGRAM:  midi2(0xC0 | e.ch, e.d1);       break;
-            case MSG_CC:       midi3(0xB0 | e.ch, e.d1, e.d2); break;
-            case MSG_CONFIG:   /* reserved */                    break;
+            case MSG_NOTE_OFF: _midi.noteOff(e.d1, e.ch);           break;
+            case MSG_PROGRAM:  _midi.program(e.d1, e.ch);           break;
+            case MSG_CC:       _midi.cc(e.d1, e.d2, e.ch);         break;
+            case MSG_CONFIG:   /* reserved */                         break;
         }
     }
 
     // ── watchdog: silence → all-notes-off ─────────────────────────────────────
-    // Arms only after the first packet (no false fire on cold boot before any
-    // music starts). Resets when packets resume, so each silence period fires once.
     static bool watchdogHasFired = false;
     if (watchdogArmed && (now - lastPacketTime > WATCHDOG_MS)) {
         if (!watchdogHasFired) {
-            allNotesOff();
+            _midi.allNotesOff();
             watchdogFires++;
             watchdogHasFired = true;
-            Serial.printf("[coffee] watchdog fired  (fire #%u  silence=%lums)\n",
+            Serial.printf("[coffee] watchdog fired (fire #%u  silence=%lums)\n",
                           watchdogFires, now - lastPacketTime);
         }
     } else {
-        watchdogHasFired = false;   // reset: packets are flowing again
+        watchdogHasFired = false;   // reset when packets resume
     }
 
     // ── heartbeat ─────────────────────────────────────────────────────────────

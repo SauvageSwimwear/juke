@@ -12,9 +12,10 @@
 //   GPIO 25 → passive piezo buzzer 0
 //   GPIO 26 → passive piezo buzzer 1
 //   GPIO 27 → passive piezo buzzer 2
+//   GPIO 14 → passive piezo buzzer 3
+//   GPIO 13 → passive piezo buzzer 4
 //   GPIO 32 → indicator LED 0
 //   GPIO 33 → indicator LED 1
-//   GPIO 13 → indicator LED 2
 //
 // Avoided: 6–11 (flash), 34/35/36/39 (input-only), 0/2/12/15 (boot-strapping), 1/3 (USB serial)
 //
@@ -28,9 +29,9 @@
 #include <math.h>
 
 // ── audio slots (buzzer only) — same channels/pins as ohgeeee.ino ─────────────
-#define NUM_AUDIO 3
-const uint8_t AUDIO_CH[NUM_AUDIO] = {  0,  5, 10 };   // MIDI channels
-const uint8_t BUZ_PIN[NUM_AUDIO]  = { 25, 26, 27 };   // passive piezo GPIO
+#define NUM_AUDIO 5
+const uint8_t AUDIO_CH[NUM_AUDIO] = {  0,  5, 10,  3,  6 };   // MIDI channels
+const uint8_t BUZ_PIN[NUM_AUDIO]  = { 25, 26, 27, 14, 13 };   // passive piezo GPIO
 
 // ── buzzer tuning ─────────────────────────────────────────────────────────────
 // DYNAMIC build: BUZ_DUTY_MIN < BUZ_DUTY_MAX, so velocity scales duty between the
@@ -44,9 +45,9 @@ const uint8_t BUZ_PIN[NUM_AUDIO]  = { 25, 26, 27 };   // passive piezo GPIO
 #define BUZ_OCTAVE_UP  0       // 0 = true pitch. Raise for loudness via resonance.
 
 // ── LED slots (visual only) — same as ohgeeee.ino ─────────────────────────────
-#define NUM_LEDS_SLOT 3
-const uint8_t LED_CH[NUM_LEDS_SLOT]  = {  1,  2,  3 };   // MIDI channels
-const uint8_t LED_PIN[NUM_LEDS_SLOT] = { 32, 33, 13 };   // indicator LED GPIO
+#define NUM_LEDS_SLOT 2
+const uint8_t LED_CH[NUM_LEDS_SLOT]  = {  1,  2 };   // MIDI channels
+const uint8_t LED_PIN[NUM_LEDS_SLOT] = { 32, 33 };   // indicator LED GPIO
 
 // ── LED tuning ────────────────────────────────────────────────────────────────
 #define LED_DECAY_PER_MS 0.8f    // brightness lost per ms; tweak to taste (0.3–2.0)
@@ -156,12 +157,12 @@ void setup() {
 
   Serial.printf(
     "ohgeeee-dynamic ready\n"
-    "  audio  ch=[%d,%d,%d]  buz=[%d,%d,%d]  (velocity-scaled)\n"
-    "  leds   ch=[%d,%d,%d]  led=[%d,%d,%d]\n",
-    AUDIO_CH[0],   AUDIO_CH[1],   AUDIO_CH[2],
-    BUZ_PIN[0],    BUZ_PIN[1],    BUZ_PIN[2],
-    LED_CH[0],     LED_CH[1],     LED_CH[2],
-    LED_PIN[0],    LED_PIN[1],    LED_PIN[2]
+    "  audio  ch=[%d,%d,%d,%d,%d]  buz=[%d,%d,%d,%d,%d]  (velocity-scaled)\n"
+    "  leds   ch=[%d,%d]  led=[%d,%d]\n",
+    AUDIO_CH[0], AUDIO_CH[1], AUDIO_CH[2], AUDIO_CH[3], AUDIO_CH[4],
+    BUZ_PIN[0],  BUZ_PIN[1],  BUZ_PIN[2],  BUZ_PIN[3],  BUZ_PIN[4],
+    LED_CH[0],   LED_CH[1],
+    LED_PIN[0],  LED_PIN[1]
   );
 }
 

@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 
 import paho.mqtt.client as mqtt
@@ -10,9 +11,10 @@ from textual.widgets import Button, Footer, Header, Label, ListItem, ListView, S
 sys.path.insert(0, str(Path(__file__).parent))
 from conductor.config import MIDI_DIR, MQTT_CTL, MQTT_HOST, MQTT_PASS, MQTT_PORT, MQTT_USER
 
-VOLUME_STEP = 10
+MQTT_STATUS    = "jukebox/status"
+VOLUME_STEP    = 10
 VOLUME_DEFAULT = 100
-VOL_BAR_WIDTH = 12
+VOL_BAR_WIDTH  = 12
 
 
 class TrackItem(ListItem):
@@ -92,7 +94,6 @@ class JukeboxApp(App):
     }
     """
 
-    # Arrow keys (↑/↓) navigate the track list — handled natively by ListView.
     BINDINGS = [
         Binding("enter", "play",         "▶",  show=True),
         Binding("space", "pause_resume", "⏸",  show=True),
@@ -126,7 +127,7 @@ class JukeboxApp(App):
                 yield Static("♪  NOW PLAYING", id="np-label")
                 yield Static("─" * 28,         id="np-divider")
                 yield Static("—",              id="np-title")
-                yield Static("",              id="np-state")
+                yield Static("",               id="np-state")
                 with Horizontal(id="transport"):
                     yield Button("▶", id="btn-play",  variant="success")
                     yield Button("⏸", id="btn-pause", variant="default")
@@ -142,14 +143,61 @@ class JukeboxApp(App):
 
     def on_mount(self) -> None:
         try:
+            self._mqtt.on_message = self._on_mqtt_message
+            self._mqtt.on_connect = self._on_mqtt_connect
             self._mqtt.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
             self._mqtt.loop_start()
+            self._publish("pause")   # stop whatever the conductor auto-started
         except Exception as exc:
             self.query_one("#np-state", Static).update(f"MQTT: {exc}")
 
     def on_unmount(self) -> None:
         self._mqtt.loop_stop()
         self._mqtt.disconnect()
+
+    # ── MQTT ──────────────────────────────────────────────────────────────────
+
+    def _on_mqtt_connect(self, client, userdata, flags, reason_code, properties) -> None:
+        """Fires in paho's background thread on every (re)connect."""
+        client.subscribe(MQTT_STATUS)
+
+    def _on_mqtt_message(self, client, userdata, msg) -> None:
+        """Fires in paho's background thread — hand off to main thread."""
+        try:
+            data = json.loads(msg.payload.decode())
+            self.call_from_thread(self._apply_status, data)
+        except Exception:
+            pass
+
+    def _apply_status(self, data: dict) -> None:
+        """Apply a jukebox/status payload. Must run on main thread."""
+        state = data.get("state", "")
+        song  = data.get("song", "")
+
+        # Sync the highlighted track to what the conductor is actually playing
+        if song:
+            song_name = Path(song).name
+            try:
+                lv = self.query_one(ListView)
+                for item in lv.children:
+                    if isinstance(item, TrackItem) and item.path.name == song_name:
+                        if self._playing and self._playing is not item:
+                            self._playing.remove_class("playing")
+                        self._playing = item
+                        self._playing.add_class("playing")
+                        break
+            except Exception:
+                pass
+
+        if state == "playing":
+            self._paused = False
+        elif state == "paused":
+            self._paused = True
+        # "online" / "offline" → don't touch paused state
+
+        self._refresh()
+
+    # ── helpers ───────────────────────────────────────────────────────────────
 
     def _publish(self, message: str) -> None:
         self._mqtt.publish(MQTT_CTL, message)
@@ -163,12 +211,10 @@ class JukeboxApp(App):
         return "⇄  [ ON ]" if self._shuffled else "⇄  [ OFF ]"
 
     def _refresh(self) -> None:
-        # track title
         self.query_one("#np-title", Static).update(
             self._playing.display_name if self._playing else "—"
         )
 
-        # state dot
         state = self.query_one("#np-state", Static)
         if self._playing is None:
             state.update("")
@@ -182,8 +228,7 @@ class JukeboxApp(App):
             state.remove_class("paused")
             state.add_class("playing")
 
-        # volume + shuffle
-        self.query_one("#vol-display",      Static).update(self._vol_text())
+        self.query_one("#vol-display", Static).update(self._vol_text())
         shuffle = self.query_one("#shuffle-indicator", Static)
         shuffle.update(self._shuffle_text())
         if self._shuffled:
@@ -191,7 +236,7 @@ class JukeboxApp(App):
         else:
             shuffle.remove_class("on")
 
-    # ── button clicks ──────────────────────────────────────────────────────────
+    # ── button clicks ─────────────────────────────────────────────────────────
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         dispatch = {
@@ -204,7 +249,7 @@ class JukeboxApp(App):
         if fn:
             fn()
 
-    # ── actions ────────────────────────────────────────────────────────────────
+    # ── actions ───────────────────────────────────────────────────────────────
 
     def on_list_view_selected(self, _: ListView.Selected) -> None:
         self.action_play()
@@ -234,9 +279,7 @@ class JukeboxApp(App):
         self._refresh()
 
     def action_stop(self) -> None:
-        if self._playing is None:
-            return
-        self._publish("pause")
+        self._publish("pause")   # guard removed — works even before first play
         self._paused = True
         self._refresh()
 

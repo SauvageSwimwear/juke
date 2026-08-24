@@ -4,7 +4,12 @@
       "Bash(python3 -m py_compile conductor.py config.py packet.py playlist.py)",
       "Bash(stty -F /dev/ttyUSB0 115200 -echo -icanon)",
       "Read(//dev/**)",
-      "Bash(dmesg)"
+      "Bash(dmesg)",
+      "Bash(set -e)",
+      "Read(//tmp/korg/**)",
+      "Bash(sudo rm -rf /tmp/korg/mnt)",
+      "Bash(mkdir -p /tmp/korg/mnt)",
+      "Bash(/sbin/mkfs.fat -F 16 -n CIRCUITPY -C /tmp/korg/fs.img 11968)"
     ]
   }
 }
