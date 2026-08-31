@@ -44,6 +44,11 @@ const uint8_t BUZ_PIN[NUM_AUDIO]  = { 25, 26, 27, 14, 13 };   // passive piezo G
 #define BUZ_DUTY_MIN  45       // duty at lowest velocity — the dynamics floor
 #define BUZ_OCTAVE_UP  0       // 0 = true pitch. Raise for loudness via resonance.
 
+// Self-healing auto-kill: ESP-NOW is fire-and-forget, so a dropped NOTE_OFF (or a
+// pause/stop mid-note) would leave a buzzer ringing forever. Any note still on
+// after this many ms with no matching NOTE_OFF is force-silenced in loop().
+#define BUZ_TIMEOUT_MS 4000
+
 // ── LED slots (visual only) — same as ohgeeee.ino ─────────────────────────────
 #define NUM_LEDS_SLOT 2
 const uint8_t LED_CH[NUM_LEDS_SLOT]  = {  1,  2 };   // MIDI channels
@@ -62,6 +67,7 @@ const uint8_t LED_PIN[NUM_LEDS_SLOT] = { 32, 33 };   // indicator LED GPIO
 
 // ── state ─────────────────────────────────────────────────────────────────────
 static int16_t       activeNote[NUM_AUDIO]       = {};   // -1 = silent; guards stray note-offs
+static unsigned long noteStart[NUM_AUDIO]        = {};   // millis() at note-on; drives auto-kill
 static float         ledBright[NUM_LEDS_SLOT]    = {};
 static unsigned long lastLedUpdate               = 0;
 
@@ -103,6 +109,7 @@ void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
       uint32_t duty = BUZ_DUTY_MIN + (uint32_t)((vel / 127.0f) * (BUZ_DUTY_MAX - BUZ_DUTY_MIN));
       ledcWrite(BUZ_PIN[i], duty);
       activeNote[i] = note;
+      noteStart[i]  = millis();
     } else if (isOff && activeNote[i] == (int16_t)note) {
       // Only silence if the ringing note matches — Crick's stray-note-off guard.
       ledcWrite(BUZ_PIN[i], 0);
@@ -177,5 +184,14 @@ void loop() {
     ledBright[i] -= LED_DECAY_PER_MS * (float)dt;
     if (ledBright[i] < 0.0f) ledBright[i] = 0.0f;
     ledcWrite(LED_PIN[i], (uint32_t)ledBright[i]);   // 0–255 duty = smooth velocity-scaled fade
+  }
+
+  // Auto-kill: force-silence any buzzer stuck ringing past the timeout (dropped
+  // NOTE_OFF or pause/stop mid-note). Keeps the mesh's lossiness from hanging notes.
+  for (int i = 0; i < NUM_AUDIO; i++) {
+    if (activeNote[i] >= 0 && (now - noteStart[i]) > BUZ_TIMEOUT_MS) {
+      ledcWrite(BUZ_PIN[i], 0);
+      activeNote[i] = -1;
+    }
   }
 }
