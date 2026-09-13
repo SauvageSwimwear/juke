@@ -9,7 +9,12 @@
       "Read(//tmp/korg/**)",
       "Bash(sudo rm -rf /tmp/korg/mnt)",
       "Bash(mkdir -p /tmp/korg/mnt)",
-      "Bash(/sbin/mkfs.fat -F 16 -n CIRCUITPY -C /tmp/korg/fs.img 11968)"
+      "Bash(/sbin/mkfs.fat -F 16 -n CIRCUITPY -C /tmp/korg/fs.img 11968)",
+      "Bash(python3 -c \"import textual; print\\(textual.__version__\\)\")",
+      "Bash(python3 -c \"from textual.theme import BUILTIN_THEMES; print\\(list\\(BUILTIN_THEMES.keys\\(\\)\\)\\)\")",
+      "Bash(python3 -c \"from textual._themes import THEMES; print\\(list\\(THEMES.keys\\(\\)\\)\\)\")",
+      "Bash(pinctrl get *)",
+      "Bash(raspi-gpio get *)"
     ]
   }
 }

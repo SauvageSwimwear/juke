@@ -1,21 +1,18 @@
 // ohgeeee_dynamic.ino — DYNAMIC-BUZZER variant of ohgeeee
 //
-// Identical to ohgeeee.ino (same pins, same MIDI channels, same LED behavior)
-// EXCEPT the buzzers respond to MIDI velocity: soft notes play quieter, loud
-// notes louder, via duty-cycle scaling. The stock ohgeeee.ino plays a flat
-// "straight buzz" (Crick-style) at full 50% duty on every note.
+// Identical to ohgeeee.ino (same LED behavior) EXCEPT the buzzers respond to
+// MIDI velocity: soft notes play quieter, loud notes louder, via duty-cycle
+// scaling. The stock ohgeeee.ino plays a flat "straight buzz" at full 50% duty
+// on every note.
 //
-// Flash this to A/B against the straight-buzz build. The only difference is the
-// BUZ_DUTY_MIN define below (45 here vs 128 in ohgeeee.ino).
-//
-// Hardware: ESP32 DevKit (WROOM-32)
-//   GPIO 25 → passive piezo buzzer 0
-//   GPIO 26 → passive piezo buzzer 1
-//   GPIO 27 → passive piezo buzzer 2
-//   GPIO 14 → passive piezo buzzer 3
-//   GPIO 13 → passive piezo buzzer 4
-//   GPIO 32 → indicator LED 0
-//   GPIO 33 → indicator LED 1
+// UPDATED: down to 4 buzzers (GPIO 13 / channel 6 slot removed). Channels
+// reassigned per new arrangement:
+//   GPIO 25 → MIDI channel 1
+//   GPIO 26 → MIDI channel 0  ─┐ paired — both respond to the same channel
+//   GPIO 27 → MIDI channel 0  ─┘ (thickens that voice)
+//   GPIO 14 → MIDI channel 10
+// All four now carry an individually-tunable volume cap (BUZ_DUTY_MAX_PER) —
+// see "buzzer tuning" below to quiet any one of them further.
 //
 // Avoided: 6–11 (flash), 34/35/36/39 (input-only), 0/2/12/15 (boot-strapping), 1/3 (USB serial)
 //
@@ -28,28 +25,26 @@
 #include <esp_wifi.h>
 #include <math.h>
 
-// ── audio slots (buzzer only) — same channels/pins as ohgeeee.ino ─────────────
-#define NUM_AUDIO 5
-const uint8_t AUDIO_CH[NUM_AUDIO] = {  0,  5, 10,  3,  6 };   // MIDI channels
-const uint8_t BUZ_PIN[NUM_AUDIO]  = { 25, 26, 27, 14, 13 };   // passive piezo GPIO
+// ── audio slots (buzzer only) ──────────────────────────────────────────────────
+#define NUM_AUDIO 4
+const uint8_t AUDIO_CH[NUM_AUDIO] = {  2,  1,  1,  1};   // MIDI channels (26 & 27 paired on ch 0)
+const uint8_t BUZ_PIN[NUM_AUDIO]  = { 25, 26, 27, 14 };   // passive piezo GPIO
 
 // ── buzzer tuning ─────────────────────────────────────────────────────────────
-// DYNAMIC build: BUZ_DUTY_MIN < BUZ_DUTY_MAX, so velocity scales duty between the
-// two (soft/loud contrast). Tuning:
-//   • Soft notes vanishing? Raise BUZ_DUTY_MIN toward 128.
-//   • Want more contrast? Lower BUZ_DUTY_MIN toward ~20.
-//   • Overall too quiet? Raise BUZ_OCTAVE_UP (1–2) toward piezo resonance (~2–4 kHz).
+// DYNAMIC build: BUZ_DUTY_MIN < BUZ_DUTY_MAX_PER[i], so velocity scales duty
+// between the two (soft/loud contrast) — same idea as before, but the ceiling
+// is now per-buzzer so any one of them can be quieted without touching the
+// others. Index order matches AUDIO_CH/BUZ_PIN above:
+//   [0] GPIO25 ch1   [1] GPIO26 ch0   [2] GPIO27 ch0   [3] GPIO14 ch10
+// All four start at a reduced 85 (down from the old flat 128 max) since all
+// three groups were flagged to quiet down. Nudge any single index up/down
+// to taste — e.g. raise index 0 back toward 128 if GPIO25 is fine as-is.
 #define BUZ_RES_BITS   8       // LEDC resolution (0–255 duty)
-#define BUZ_DUTY_MAX 128       // 50% of 256 — loudest a piezo gets (velocity 127)
-#define BUZ_DUTY_MIN  45       // duty at lowest velocity — the dynamics floor
+const uint8_t BUZ_DUTY_MAX_PER[NUM_AUDIO] = { 85, 85, 85, 85 };  // per-buzzer loudest duty
+#define BUZ_DUTY_MIN  45       // duty at lowest velocity — the dynamics floor (shared)
 #define BUZ_OCTAVE_UP  0       // 0 = true pitch. Raise for loudness via resonance.
 
-// Self-healing auto-kill: ESP-NOW is fire-and-forget, so a dropped NOTE_OFF (or a
-// pause/stop mid-note) would leave a buzzer ringing forever. Any note still on
-// after this many ms with no matching NOTE_OFF is force-silenced in loop().
-#define BUZ_TIMEOUT_MS 4000
-
-// ── LED slots (visual only) — same as ohgeeee.ino ─────────────────────────────
+// ── LED slots (visual only) — unchanged ────────────────────────────────────────
 #define NUM_LEDS_SLOT 2
 const uint8_t LED_CH[NUM_LEDS_SLOT]  = {  1,  2 };   // MIDI channels
 const uint8_t LED_PIN[NUM_LEDS_SLOT] = { 32, 33 };   // indicator LED GPIO
@@ -67,7 +62,6 @@ const uint8_t LED_PIN[NUM_LEDS_SLOT] = { 32, 33 };   // indicator LED GPIO
 
 // ── state ─────────────────────────────────────────────────────────────────────
 static int16_t       activeNote[NUM_AUDIO]       = {};   // -1 = silent; guards stray note-offs
-static unsigned long noteStart[NUM_AUDIO]        = {};   // millis() at note-on; drives auto-kill
 static float         ledBright[NUM_LEDS_SLOT]    = {};
 static unsigned long lastLedUpdate               = 0;
 
@@ -93,7 +87,9 @@ void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
 
   if (msgType != MSG_NOTE_ON && msgType != MSG_NOTE_OFF) return;
 
-  // ── audio: buzzers (velocity-scaled duty) ──────────────────────────────────
+  // ── audio: buzzers (velocity-scaled duty, per-buzzer ceiling) ──────────────
+  // NOTE: no `break` here — GPIO26 and GPIO27 now share channel 0, so both
+  // must be checked and fired on every matching packet, not just the first hit.
   for (int i = 0; i < NUM_AUDIO; i++) {
     if (ch != AUDIO_CH[i]) continue;
     bool isOn  = (msgType == MSG_NOTE_ON  && vel > 0);
@@ -106,16 +102,14 @@ void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
       // Frequency and duty set separately (not ledcWriteTone, which forces 50%)
       // so velocity can scale loudness via duty cycle.
       ledcChangeFrequency(BUZ_PIN[i], midiToHz(bnote), BUZ_RES_BITS);
-      uint32_t duty = BUZ_DUTY_MIN + (uint32_t)((vel / 127.0f) * (BUZ_DUTY_MAX - BUZ_DUTY_MIN));
+      uint32_t duty = BUZ_DUTY_MIN + (uint32_t)((vel / 127.0f) * (BUZ_DUTY_MAX_PER[i] - BUZ_DUTY_MIN));
       ledcWrite(BUZ_PIN[i], duty);
       activeNote[i] = note;
-      noteStart[i]  = millis();
     } else if (isOff && activeNote[i] == (int16_t)note) {
       // Only silence if the ringing note matches — Crick's stray-note-off guard.
       ledcWrite(BUZ_PIN[i], 0);
       activeNote[i] = -1;
     }
-    break;
   }
 
   // ── visual: LEDs ───────────────────────────────────────────────────────────
@@ -163,11 +157,12 @@ void setup() {
   lastLedUpdate = millis();
 
   Serial.printf(
-    "ohgeeee-dynamic ready\n"
-    "  audio  ch=[%d,%d,%d,%d,%d]  buz=[%d,%d,%d,%d,%d]  (velocity-scaled)\n"
+    "ohgeeee-dynamic ready (4 buzzers)\n"
+    "  audio  ch=[%d,%d,%d,%d]  buz=[%d,%d,%d,%d]  maxduty=[%d,%d,%d,%d]\n"
     "  leds   ch=[%d,%d]  led=[%d,%d]\n",
-    AUDIO_CH[0], AUDIO_CH[1], AUDIO_CH[2], AUDIO_CH[3], AUDIO_CH[4],
-    BUZ_PIN[0],  BUZ_PIN[1],  BUZ_PIN[2],  BUZ_PIN[3],  BUZ_PIN[4],
+    AUDIO_CH[0], AUDIO_CH[1], AUDIO_CH[2], AUDIO_CH[3],
+    BUZ_PIN[0],  BUZ_PIN[1],  BUZ_PIN[2],  BUZ_PIN[3],
+    BUZ_DUTY_MAX_PER[0], BUZ_DUTY_MAX_PER[1], BUZ_DUTY_MAX_PER[2], BUZ_DUTY_MAX_PER[3],
     LED_CH[0],   LED_CH[1],
     LED_PIN[0],  LED_PIN[1]
   );
@@ -184,14 +179,5 @@ void loop() {
     ledBright[i] -= LED_DECAY_PER_MS * (float)dt;
     if (ledBright[i] < 0.0f) ledBright[i] = 0.0f;
     ledcWrite(LED_PIN[i], (uint32_t)ledBright[i]);   // 0–255 duty = smooth velocity-scaled fade
-  }
-
-  // Auto-kill: force-silence any buzzer stuck ringing past the timeout (dropped
-  // NOTE_OFF or pause/stop mid-note). Keeps the mesh's lossiness from hanging notes.
-  for (int i = 0; i < NUM_AUDIO; i++) {
-    if (activeNote[i] >= 0 && (now - noteStart[i]) > BUZ_TIMEOUT_MS) {
-      ledcWrite(BUZ_PIN[i], 0);
-      activeNote[i] = -1;
-    }
   }
 }

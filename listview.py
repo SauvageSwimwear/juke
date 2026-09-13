@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import sys
+import threading
 
 import paho.mqtt.client as mqtt
 from textual.app import App, ComposeResult
@@ -10,11 +11,12 @@ from textual.widgets import Button, Footer, Header, Label, ListItem, ListView, S
 
 sys.path.insert(0, str(Path(__file__).parent))
 from conductor.config import MIDI_DIR, MQTT_CTL, MQTT_HOST, MQTT_PASS, MQTT_PORT, MQTT_USER
+from chanscan import scan_to_str
 
 MQTT_STATUS    = "jukebox/status"
-VOLUME_STEP    = 10
+VOLUME_STEP = 10
 VOLUME_DEFAULT = 100
-VOL_BAR_WIDTH  = 12
+VOL_BAR_WIDTH = 12
 
 
 class TrackItem(ListItem):
@@ -29,6 +31,7 @@ class TrackItem(ListItem):
 
 class JukeboxApp(App):
     TITLE = "Jukebox"
+    _default_theme = "solarized-light"
 
     CSS = """
     #controls {
@@ -84,6 +87,26 @@ class JukeboxApp(App):
         color: $success;
     }
 
+    #chanscan-col {
+        width: 32;
+        padding: 1 2;
+        border-left: solid $surface-darken-2;
+    }
+
+    #chanscan-label {
+        color: $text-muted;
+    }
+
+    #chanscan-divider {
+        color: $surface-darken-2;
+        margin-bottom: 1;
+    }
+
+    #chanscan-panel {
+        color: $text-muted;
+        height: 1fr;
+    }
+
     ListView {
         width: 1fr;
     }
@@ -94,6 +117,7 @@ class JukeboxApp(App):
     }
     """
 
+    # Arrow keys (↑/↓) navigate the track list — handled natively by ListView.
     BINDINGS = [
         Binding("enter", "play",         "▶",  show=True),
         Binding("space", "pause_resume", "⏸",  show=True),
@@ -104,6 +128,7 @@ class JukeboxApp(App):
         Binding("t",     "vol_down",     "♪−", show=True),
         Binding("q",     "quit",         "✕",  show=True),
         Binding("escape","quit",         "",   show=False),
+        Binding("c",     "chanscan",     "⚙ ch", show=True),
     ]
 
     def __init__(self) -> None:
@@ -127,7 +152,7 @@ class JukeboxApp(App):
                 yield Static("♪  NOW PLAYING", id="np-label")
                 yield Static("─" * 28,         id="np-divider")
                 yield Static("—",              id="np-title")
-                yield Static("",               id="np-state")
+                yield Static("",              id="np-state")
                 with Horizontal(id="transport"):
                     yield Button("▶", id="btn-play",  variant="success")
                     yield Button("⏸", id="btn-pause", variant="default")
@@ -139,6 +164,10 @@ class JukeboxApp(App):
                 yield ListView(*[TrackItem(f) for f in tracks])
             else:
                 yield Static(f"No .mid files found in {MIDI_DIR}")
+            with Vertical(id="chanscan-col"):
+                yield Static("⚙  CHANNELS", id="chanscan-label")
+                yield Static("─" * 20,      id="chanscan-divider")
+                yield Static("",            id="chanscan-panel")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -211,10 +240,12 @@ class JukeboxApp(App):
         return "⇄  [ ON ]" if self._shuffled else "⇄  [ OFF ]"
 
     def _refresh(self) -> None:
+        # track title
         self.query_one("#np-title", Static).update(
             self._playing.display_name if self._playing else "—"
         )
 
+        # state dot
         state = self.query_one("#np-state", Static)
         if self._playing is None:
             state.update("")
@@ -228,7 +259,8 @@ class JukeboxApp(App):
             state.remove_class("paused")
             state.add_class("playing")
 
-        self.query_one("#vol-display", Static).update(self._vol_text())
+        # volume + shuffle
+        self.query_one("#vol-display",      Static).update(self._vol_text())
         shuffle = self.query_one("#shuffle-indicator", Static)
         shuffle.update(self._shuffle_text())
         if self._shuffled:
@@ -236,7 +268,7 @@ class JukeboxApp(App):
         else:
             shuffle.remove_class("on")
 
-    # ── button clicks ─────────────────────────────────────────────────────────
+    # ── button clicks ──────────────────────────────────────────────────────────
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         dispatch = {
@@ -249,7 +281,7 @@ class JukeboxApp(App):
         if fn:
             fn()
 
-    # ── actions ───────────────────────────────────────────────────────────────
+    # ── actions ────────────────────────────────────────────────────────────────
 
     def on_list_view_selected(self, _: ListView.Selected) -> None:
         self.action_play()
@@ -305,6 +337,25 @@ class JukeboxApp(App):
         self._volume = max(0, self._volume - VOLUME_STEP)
         self._publish(f"volume/{self._volume}")
         self._refresh()
+
+    def action_chanscan(self) -> None:
+        if self._playing is None:
+            return
+        path = self._playing.path          # already a Path from the glob
+        panel = self.query_one("#chanscan-panel", Static)
+        panel.update(f"scanning {path.name}…")
+        threading.Thread(
+            target=self._do_scan, args=(path,), daemon=True
+        ).start()
+
+    def _do_scan(self, path: Path) -> None:
+        try:
+            result = scan_to_str(path)
+        except Exception as exc:
+            result = f"scan error: {exc}"
+        self.call_from_thread(
+            self.query_one("#chanscan-panel", Static).update, result
+        )
 
 
 if __name__ == "__main__":
